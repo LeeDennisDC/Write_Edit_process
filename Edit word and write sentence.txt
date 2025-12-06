@@ -1,0 +1,162 @@
+# --------------------------------------------
+# 이미지 OCR + 저신뢰 글자 사용자 보정 프로그램 (1파일 완전체)
+# --------------------------------------------
+
+# 필요한 라이브러리:
+# pip install pillow pytesseract
+# Tesseract-OCR 프로그램 설치 후 경로를 아래에 지정해야 함.
+#
+# 예:
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+import tkinter as tk
+from tkinter import filedialog
+from PIL import Image, ImageTk
+import pytesseract
+
+# --------------------------------------------
+# Tesseract 실행 파일 경로 (환경에 맞게 수정)
+# --------------------------------------------
+# 예시 (본인 경로로 변경하세요)
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+CONF_THRESHOLD = 80.0  # 인식률 기준(%)
+
+
+# --------------------------------------------
+# 메인 클래스
+# --------------------------------------------
+class OCRCorrectorApp:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("이미지 글자 인식 + 수동 보정")
+        self.root.geometry("400x200")
+
+        btn_select = tk.Button(self.root, text="이미지 선택 (.jpg/.jpeg/.png)", command=self.run_process)
+        btn_select.pack(pady=40)
+
+        self.text_output = tk.Text(self.root, height=5)
+        self.text_output.pack(fill="both", expand=True, padx=10, pady=10)
+
+    # --------------------------------------------
+    # 1. 파일 선택 → OCR 수행
+    # --------------------------------------------
+    def run_process(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("Image files", "*.jpg;*.jpeg;*.png")]
+        )
+        if not path:
+            return
+
+        img = Image.open(path)
+
+        # OCR 데이터 (글자 + 위치 + 신뢰도)
+        data = pytesseract.image_to_data(img, lang='eng', output_type=pytesseract.Output.DICT)
+
+        n = len(data['text'])
+        result_lines = []
+        current_line_num = None
+        current_tokens = []
+
+        self.text_output.delete("1.0", tk.END)
+
+        for i in range(n):
+            text = data['text'][i].strip()
+            if not text:
+                continue
+
+            # 인식률(confidence)
+            try:
+                conf = float(data['conf'][i])
+            except:
+                conf = -1.0
+
+            line_num = data['line_num'][i]
+
+            # 줄 바뀜 처리
+            if current_line_num is None:
+                current_line_num = line_num
+            if line_num != current_line_num:
+                result_lines.append(" ".join(current_tokens))
+                current_tokens = []
+                current_line_num = line_num
+
+            final_text = text
+
+            # --------------------------------------------
+            # 3. 인식률이 80% 이하면 사용자 보정 요청
+            # --------------------------------------------
+            if 0 <= conf < CONF_THRESHOLD:
+                x, y, w, h = (
+                    data['left'][i], data['top'][i],
+                    data['width'][i], data['height'][i]
+                )
+                crop = img.crop((x, y, x + w, y + h))
+
+                final_text = self.ask_user_for_correction(crop, text, conf)
+
+            current_tokens.append(final_text)
+
+            # 진행 중 텍스트 표시
+            temp_lines = result_lines + [" ".join(current_tokens)]
+            current_full_text = "\n".join(temp_lines)
+            self.text_output.delete("1.0", tk.END)
+            self.text_output.insert(tk.END, current_full_text)
+
+        # 마지막 줄 저장
+        if current_tokens:
+            result_lines.append(" ".join(current_tokens))
+
+        full_text = "\n".join(result_lines)
+        self.text_output.delete("1.0", tk.END)
+        self.text_output.insert(tk.END, full_text)
+
+    # --------------------------------------------
+    # 낮은 신뢰도 글자 → 사용자에게 직접 확인받기
+    # --------------------------------------------
+    def ask_user_for_correction(self, crop_image, original_text, conf):
+        win = tk.Toplevel(self.root)
+        win.title(f"저신뢰 글자 확인 (conf={conf:.1f}%)")
+
+        # 이미지 표시
+        crop_resized = crop_image.resize(
+            (min(200, crop_image.width), min(200, crop_image.height))
+        )
+        photo = ImageTk.PhotoImage(crop_resized)
+        lbl_img = tk.Label(win, image=photo)
+        lbl_img.image = photo
+        lbl_img.pack(padx=10, pady=10)
+
+        lbl_info = tk.Label(
+            win,
+            text=f"인식된 글자: '{original_text}'\n정확한 글자를 입력하세요."
+        )
+        lbl_info.pack(padx=10, pady=5)
+
+        entry = tk.Entry(win)
+        entry.insert(0, original_text)
+        entry.pack(padx=10, pady=5)
+
+        result = {"text": original_text}
+
+        def on_ok():
+            user_input = entry.get().strip()
+            if user_input:
+                result["text"] = user_input
+            win.destroy()
+
+        btn_ok = tk.Button(win, text="확인", command=on_ok)
+        btn_ok.pack(pady=10)
+
+        win.grab_set()
+        win.wait_window()
+
+        return result["text"]
+
+
+# --------------------------------------------
+# 실행
+# --------------------------------------------
+if __name__ == "__main__":
+    app = OCRCorrectorApp()
+    app.root.mainloop()
